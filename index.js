@@ -15,27 +15,32 @@ const path = require('path');
     //   console.dir(details, { depth: null });
     // }
     // AnimeVost
-    console.log('\nПолучаем список аниме с AnimeVost...');
-    const vostList = await getVostList(300);
+    // Определяем, сколько страниц доступно
+    const totalPages = await require('./parsers/animevost').getMaxPages();
+    console.log(`Всего страниц в пагинации AnimeVost: ${totalPages}`);
+    console.log('Получаем список аниме со всех страниц...');
+    const vostList = await getVostList();
     console.log(`Найдено аниме: ${vostList.length}`);
     await fs.writeFile('animevost_list.json', JSON.stringify(vostList, null, 2), 'utf-8');
     console.log('Список аниме сохранён в animevost_list.json');
 
-
-    for (let i = 0; i < vostList.length; i++) {
-      const anime = vostList[i];
+    // 2. Читаем этот файл, парсим подробности по каждому аниме и сохраняем всё в один файл
+    const rawList = await fs.readFile('animevost_list.json', 'utf-8');
+    const animeList = JSON.parse(rawList);
+    const detailsList = [];
+    for (let i = 0; i < animeList.length; i++) {
+      const anime = animeList[i];
       try {
-        console.log(`[${i+1}/${vostList.length}] Парсим: ${anime.title}`);
+        console.log(`[${i+1}/${animeList.length}] Парсим: ${anime.title}`);
         const details = await getVostDetails(anime.link);
-        const fileName = path.join('animevost_details', `${details._id || i}.json`);
-        await fs.mkdir('animevost_details', { recursive: true });
-        await fs.writeFile(fileName, JSON.stringify(details, null, 2), 'utf-8');
+        detailsList.push(details);
         await vostDelay(200); // задержка между запросами
       } catch (err) {
         console.error(`Ошибка при парсинге ${anime.link}:`, err.message);
       }
     }
-    console.log('Все подробности сохранены в папке animevost_details');
+    await fs.writeFile('animevost.json', JSON.stringify(detailsList, null, 2), 'utf-8');
+    console.log('Все подробности сохранены в одном файле animevost.json');
   } catch (err) {
     console.error('Ошибка:', err);
   }
