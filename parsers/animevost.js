@@ -34,7 +34,7 @@ async function getAnimeList() {
         if (title && link) animeList.push({ title, link, poster });
       });
       page += 1;
-      await delay(1000);
+      await delay(200);
     } catch (err) {
       break;
     }
@@ -42,29 +42,12 @@ async function getAnimeList() {
   return animeList;
 }
 
-/**
- * Получить подробную информацию об аниме с AnimeVost
- * @param {string} animeUrl - URL страницы аниме
- * @returns {Promise<Object>} - Объект с подробной информацией
- */
 async function getAnimeDetails(animeUrl) {
   const baseUrl = 'https://animevost.org';
   const { data: html } = await axios.get(animeUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } });
   const $ = cheerio.load(html);
 
-  // Заголовок и постер
-  const title = $('.shortstoryHead h2 a').first().text().trim();
-  let poster = $('.short-img img').attr('src');
-  if (poster && !poster.startsWith('http')) poster = baseUrl + poster;
-
-  // Описание
-  let description = $('.shortstoryContent').text().trim();
-  if (!description) description = $('.short-story').text().trim();
-
-  // Дата релиза (первый статик-инфо элемент)
-  const releaseDate = $('.staticInfoLeftData').first().text().trim() || null;
-
-  // Ссылки плеера: iframe и video source
+  // Extract iframe and video sources
   const iframes = $('iframe').map((i, el) => {
     let src = $(el).attr('src');
     if (src && !src.startsWith('http')) src = baseUrl + src;
@@ -76,37 +59,114 @@ async function getAnimeDetails(animeUrl) {
     return src;
   }).get().filter(Boolean);
 
-  const player = {
-    alternative_player: iframes.length ? iframes : null,
-    sources: videoSources.length ? videoSources : null,
-    host: iframes[0] ? new URL(iframes[0]).host : null
-  };
+  // Title
+  const headerText = $('.shortstoryHead h1').first().text().trim();
+  const title = headerText.split('[')[0].trim();
 
-  // Пример парсинга дополнительных полей (жанры, год и т.д.)
+  // Poster
+  let poster = $('img.imgRadius').first().attr('src') || null;
+  if (poster && !poster.startsWith('http')) poster = baseUrl + poster;
+
+  // Static info: release date, views, comments, uploader
+  const releaseDate = $('.staticInfoLeftData').first().text().trim() || null;
+  const viewCount = parseInt($('.staticInfoRightSmotr').first().text().replace(/\D/g, ''), 10) || null;
+  const commentsCount = parseInt($('a#dle-comm-link').first().text().replace(/\D/g, ''), 10) || null;
+  const uploader = $('.staticInfoLeft a').first().text().trim() || null;
+
+  // Description
+  const description = $('[itemprop="description"]').first().text().trim() || null;
+
+  // Year
   let year = null;
+  const yearMatch = $('p:contains("Год выхода")').text().match(/Год выхода:\s*(\d{4})/);
+  if (yearMatch) year = parseInt(yearMatch[1], 10);
+
+  // Genres
   let genres = [];
-  $('.short-info').each((i, el) => {
-    const text = $(el).text();
-    const yearMatch = text.match(/Год:\s*(\d{4})/);
-    if (yearMatch) year = parseInt(yearMatch[1], 10);
-    const genresMatch = text.match(/Жанр:\s*([\w\s,]+)/);
-    if (genresMatch) genres = genresMatch[1].split(',').map(g => g.trim());
+  const genreText = $('p:contains("Жанр")').text().replace('Жанр:', '').trim();
+  if (genreText) genres = genreText.split(',').map(g => g.trim());
+
+  // Type
+  const typeText = $('p:contains("Тип")').text().replace('Тип:', '').trim() || null;
+
+  // Episode count
+  let episodesCount = null;
+  const episodesMatch = $('p:contains("Количество серий")').text().match(/Количество серий:\s*(\d+)/);
+  if (episodesMatch) episodesCount = parseInt(episodesMatch[1], 10);
+
+  // Director(s)
+  const directors = $('p:contains("Режиссёр") a').map((i, el) => $(el).text().trim()).get();
+
+  // Tags
+  const tags = $('#shortstoryContentTegi a').map((i, el) => $(el).text().trim()).get();
+
+  // Categories
+  const categories = $('.shortstoryFuter span a').map((i, el) => $(el).text().trim()).get();
+
+  // Franchises (спиноффы)
+  const franchises = [];
+  $('.text_spoiler ol li a').each((i, el) => {
+    const name = $(el).text().trim();
+    let link = $(el).attr('href');
+    if (link && !link.startsWith('http')) link = baseUrl + link;
+    if (name) franchises.push({ name, link });
   });
 
-  // Возвращаем объект с дополнительными полями
+  // Episodes list from embedded script
+  const episodesList = {};
+  const scriptTag = $('script').filter((i, el) => $(el).html().includes('var data')).first().html() || '';
+  const dataMatch = scriptTag.match(/var\s+data\s*=\s*(\{[\s\S]*?\});/);
+  if (dataMatch) {
+    try {
+      const epData = JSON.parse(dataMatch[1]);
+      Object.entries(epData).forEach(([key, val]) => {
+        const numMatch = key.match(/(\d+)/);
+        const num = numMatch ? parseInt(numMatch[1], 10) : null;
+        if (num !== null) {
+          episodesList[num] = {
+            episode: num,
+            name: key,
+            uuid: uuidv4(),
+            created_timestamp: null,
+            preview: val ? `https://media.aniland.org/img/${val}.jpg` : null,
+            skips: { opening: [], ending: [] },
+            hls: null
+          };
+        }
+      });
+    } catch (e) {
+      // ignore parse errors
+    }
+  }
+
+  // Build player object
+  const player = {
+    episodes: {
+      first: episodesCount ? 1 : null,
+      last: episodesCount,
+      string: episodesCount ? `1-${episodesCount}` : null
+    },
+    list: episodesList,
+    alternative_player: iframes.length ? iframes : null,
+    sources: videoSources.length ? videoSources : null,
+    host: iframes[0] ? new URL(iframes[0]).host : null,
+    is_rutube: false
+  };
+
+  // Assemble and return detailed anime object
   return {
     _id: uuidv4(),
-    apiId: null,
+    apiId: "animevost",
     title,
     titles: { ru: title, en: null, alternative: null },
     poster,
     description,
     year,
-    type: null,
+    type: typeText,
     type_code: null,
     status: null,
     status_string: null,
-    episodes: null,
+    episodes: episodesCount,
     genres,
     team: {
       voice: [],
@@ -116,32 +176,16 @@ async function getAnimeDetails(animeUrl) {
       timing: []
     },
     player,
-    torrents: {
-      episodes: {
-        first: null,
-        last: null,
-        string: null
-      },
-      list: []
-    },
-    lastChange: null,
-    updated: null,
-    season: {
-      string: null,
-      code: null,
-      year: null,
-      week_day: null
-    },
-    franchises: [],
-    blocked: {
-      copyrights: false,
-      geoip: false,
-      geoip_list: []
-    },
-    in_favorites: null,
-    code: null,
-    announce: null,
-    createdAt: null
+    torrents: { episodes: { first: null, last: null, string: null }, list: [] },
+    releaseDate,
+    viewCount,
+    commentsCount,
+    uploader,
+    tags,
+    categories,
+    franchises,
+    directors,
+    createdAt: releaseDate
   };
 }
 

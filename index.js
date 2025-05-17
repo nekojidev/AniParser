@@ -34,7 +34,7 @@ const path = require('path');
         console.log(`[${i+1}/${animeList.length}] Парсим: ${anime.title}`);
         const details = await getVostDetails(anime.link);
         detailsList.push(details);
-        await vostDelay(200); // задержка между запросами
+        await vostDelay(20); // задержка между запросами
       } catch (err) {
         console.error(`Ошибка при парсинге ${anime.link}:`, err.message);
       }
